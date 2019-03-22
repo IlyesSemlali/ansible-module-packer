@@ -1,10 +1,9 @@
 #!/usr/bin/python
 
-# Copyright: (c) 2018, Terry Jones <terry.jones@example.org>
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 ANSIBLE_METADATA = {
-    'metadata_version': '1.1',
+    'metadata_version': '0.1',
     'status': ['preview'],
     'supported_by': 'community'
 }
@@ -23,19 +22,40 @@ description:
 options:
     name:
         description:
-            - The name of the image that will be built
+            - "The name of the image that will be built"
+        required: true
+    provider:
+        description:
+            - "Provider on which the image will be built (only OpenStack is supported at the time)"
+        required: true
+    provider_username:
+        description:
+            - "Username needed to authenticate against specified provider"
+        required: true
+    provider_token:
+        description:
+            - "Token/Password needed to authenticate against specified provider"
+        required: true
+    tenant_id:
+        description:
+            - Tenant or project ID (needed for OpenStack) 
         required: true
     source_id:
         description:
-            - Image ID from which packer will build
+            - "Image ID from which packer will build"
+        required: true
+    region:
+        description:
+            - "Region name where the image will be built"
         required: true
     network_id:
         description:
-            - Network ID need in order to update the image
+            - "Network ID need in order to update the image"
         required: true
-
-extends_documentation_fragment:
-    - azure
+    update:
+        description:
+            - Wether to update an existing image or not
+        required: false
 
 author:
     - Ilyes Semlali (@IlyesSemlali)
@@ -48,74 +68,177 @@ EXAMPLES = '''
     name: MyCentos7
     source_id: '446b0b52-4092-4cbd-9898-e6a2d9222c0e'
     network_id: 'ce07016c-95df-4085-bb5a-565caffc2063'
+    region: 'REG1'
 '''
 
 RETURN = '''
-original_message:
-    description: The original name param that was passed in
+image_id:
+    description: Freshly built or updated image ID
     type: str
-message:
-    description: The output message that the sample module generates
 '''
 
+import re
+import json
+import os
+import string
+from string import maketrans
+from subprocess import Popen, PIPE
 from ansible.module_utils.basic import AnsibleModule
+from tempfile import mkstemp, mkdtemp
+from ansible.plugins import AnsiblePlugin
+from ansible.plugins.lookup import LookupBase
+from ansible.plugins.lookup import config
 
-def run_module():
+#def packer_validate():
+
+def get_item_from_json(name_key,id_key,value,json_document):
+    json_object = json.loads(json_document)
+    for entry in json_object:
+        entry_name = str(entry[name_key])
+        entry_id = str(entry[id_key])
+        if entry_name.translate(None, string.whitespace) == value.translate(None, string.whitespace):
+            return entry_id
+    return ""
+
+#def check_existing_image(module):
+#    openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '--private', '-f', 'json',
+#            '--os-username', module.params['provider_username'],
+#            '--os-auth-url', module.params['provider_auth_url'],
+#            '--os-password', module.params['provider_token'],
+#            '--os-project-id', module.params['tenant_id'],
+#            '--os-region-name', module.params['region']
+#        ], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+#    out, err = openstack_cmd.communicate()
+#    return get_item_from_json('Name', module.params['name'], out)
+
+def get_image_by_name(module):
+    openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '-f', 'json',
+            '--os-username', module.params['provider_username'],
+            '--os-auth-url', module.params['provider_auth_url'],
+            '--os-password', module.params['provider_token'],
+            '--os-project-id', module.params['tenant_id'],
+            '--os-region-name', module.params['region']
+        ], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    out, err = openstack_cmd.communicate()
+    return get_item_from_json('Name', 'ID', module.params['base_image'], out)
+
+def get_network_by_name(module):
+    openstack_cmd = Popen(['/usr/bin/neutron', 'net-list', '-f', 'json',
+            '--os-username', module.params['provider_username'],
+            '--os-auth-url', module.params['provider_auth_url'],
+            '--os-password', module.params['provider_token'],
+            '--os-project-id', module.params['tenant_id'],
+            '--os-region-name', module.params['region']
+        ], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    out, err = openstack_cmd.communicate()
+    rc = openstack_cmd.close()
+    
+#    if rc == 0:
+    return get_item_from_json('name', 'id', module.params['network_name'], out)
+
+def make_temp_json(module,name):
+    remote_tmp = os.path.expandvars(module._remote_tmp)
+    if not os.path.isdir(remote_tmp):
+        os.makedirs(remote_tmp)
+    fd, path = mkstemp(prefix='ansible-' + name + '.', suffix='.json',
+                dir=remote_tmp
+            )
+    return fd, path
+
+def generate_packer_json(module,packer_manifest):
+    image_id = module.params['base_image_id'] if module.params['base_image_id'] else get_image_by_name(module)
+    network_id = module.params['network_id'] if module.params['network_id'] else get_network_by_name(module)
+
+    post_processors = [{
+      "type": "manifest",
+      "output": packer_manifest,
+      "strip_path": 'true'
+    }]
+
+    provisioners = [{ }]
+
+    builders = [{
+            "type": "openstack",
+            "region": str(module.params['region']),
+            "image_name": str(module.params['name']),
+            "source_image": str(image_id),
+            "flavor": str(module.params['flavor']),
+            "insecure": "true",
+            "ssh_ip_version": "4",
+            "networks": [ str(network_id) ],
+            "communicator": "ssh",
+            "ssh_username": str(module.params['ssh_username']) }]
+
+    data = {
+            "builders": builders,
+            "post-processors": post_processors
+    }
+    return json.dumps(data)
+
+def build_image(module):
+    
+    packer_env = {
+            'OS_REGION_NAME': module.params['region'],
+            'OS_AUTH_URL': module.params['provider_auth_url'],
+            'OS_USERNAME': module.params['provider_username'],
+            'OS_TENANT_ID': module.params['tenant_id'],
+            'OS_PASSWORD': module.params['provider_token']
+    }
+
+    manifest_fd, packer_manifest = make_temp_json(module,'packer_manifest')
+    packer_data = str(generate_packer_json(module,packer_manifest))
+    packer_fd, packer_file = make_temp_json(module,'packer')
+
+    with open(packer_file, 'w') as f:
+        f.write(packer_data)
+    os.close(packer_fd)
+
+    packer_cmd = Popen(['/usr/local/bin/packer', 'build', packer_file ], 
+            stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
+    out, err = packer_cmd.communicate()
+
+    
+    with open(packer_manifest) as manifest:
+        data = json.load(manifest)
+    os.close(manifest_fd)
+
+    os.remove(packer_file)
+    os.remove(packer_manifest)
+    return data['builds'][0]['artifact_id']
+
+#def delete_old_image():
+
+def main():
     # define available arguments/parameters a user can pass to the module
     module_args = dict(
         name=dict(type='str', required=True),
-        source_id=dict(type='str', required=True)
-        network_id=dict(type='str', required=True)
+        base_image=dict(type='str', required=False),
+        base_image_id=dict(type='str', required=False),
+        flavor=dict(type='str', required=True),
+        network_id=dict(type='str', required=False),
+        network_name=dict(type='str', required=False),
+        ssh_username=dict(type='str', required=True),
+        region=dict(type='str', required=True),
+        tenant_id=dict(type='str', required=True),
+        provider_username=dict(type='str', required=True),
+        provider_token=dict(type='str', required=True),
+        provider_auth_url=dict(type='str', required=False)
     )
 
-    # seed the result dict in the object
-    # we primarily care about changed and state
-    # change is if this module effectively modified the target
-    # state will include any data that you want your module to pass back
-    # for consumption, for example, in a subsequent task
-    result = dict(
-        changed=False,
-        original_message='',
-        message=''
-    )
-
-    # the AnsibleModule object will be our abstraction working with Ansible
-    # this includes instantiation, a couple of common attr would be the
-    # args/params passed to the execution, as well as if the module
-    # supports check mode
     module = AnsibleModule(
         argument_spec=module_args,
-        supports_check_mode=True
+        supports_check_mode=False
     )
 
-    # if the user is working with this module in only check mode we do not
-    # want to make any changes to the environment, just return the current
-    # state with no modifications
-    if module.check_mode:
-        return result
+    result = dict(
+        changed=False
+    )
 
-    # manipulate or modify the state as needed (this is going to be the
-    # part where your module will do what it needs to do)
-    result['original_message'] = module.params['name']
-    result['message'] = 'goodbye'
+    result['image_id'] = get_image_by_name(module)
+    result['output'] = build_image(module)
+    result['network'] = get_network_by_name(module)
 
-    # use whatever logic you need to determine whether or not this module
-    # made any modifications to your target
-    if module.params['new']:
-        result['changed'] = True
-
-    # during the execution of the module, if there is an exception or a
-    # conditional state that effectively causes a failure, run
-    # AnsibleModule.fail_json() to pass in the message and the result
-    if module.params['name'] == 'fail me':
-        module.fail_json(msg='You requested this to fail', **result)
-
-    # in the event of a successful module execution, you will want to
-    # simple AnsibleModule.exit_json(), passing the key/value results
     module.exit_json(**result)
-
-def main():
-    run_module()
 
 if __name__ == '__main__':
     main()
