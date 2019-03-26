@@ -3,7 +3,7 @@
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 ANSIBLE_METADATA = {
-    'metadata_version': '0.1',
+    'metadata_version': '0.1.1',
     'status': ['preview'],
     'supported_by': 'community'
 }
@@ -17,16 +17,12 @@ short_description: Run Packer command to build images
 version_added: "2.7"
 
 description:
-    - "This module runs packer command to build images on clouds" 
+    - "This module runs packer command to build images on clouds"
 
 options:
     name:
         description:
             - "The name of the image that will be built"
-        required: true
-    provider:
-        description:
-            - "Provider on which the image will be built (only OpenStack is supported at the time)"
         required: true
     provider_username:
         description:
@@ -36,21 +32,41 @@ options:
         description:
             - "Token/Password needed to authenticate against specified provider"
         required: true
+    provider_auth_url:
+        description:
+            - "URL needed to authenticate against specified provider"
+        required: true
     tenant_id:
         description:
-            - Tenant or project ID (needed for OpenStack) 
+            - Tenant or project ID (needed for OpenStack)
         required: true
-    source_id:
+    base_image_id:
         description:
             - "Image ID from which packer will build"
+        required: false
+    base_image:
+        description:
+            - "Image name from which packer will build (base_image_id won't be used when this parameter is defined)"
+        required: false
+    flavor:
+        description:
+            - "Flavor used to build new image"
         required: true
     region:
         description:
             - "Region name where the image will be built"
         required: true
+    network_name:
+        description:
+            - "Network need in order to update the image (netowrk_id won't be used when this parameter is defined)"
+        required: false
     network_id:
         description:
             - "Network ID need in order to update the image"
+        required: false
+    ssh_username:
+        description:
+            - "User needed to provision the image that will be built"
         required: true
     update:
         description:
@@ -63,12 +79,18 @@ author:
 
 EXAMPLES = '''
 # Pass in a message
-- name: Build CentOS 7 
+- name: Build CentOS 7
   packer:
     name: MyCentos7
-    source_id: '446b0b52-4092-4cbd-9898-e6a2d9222c0e'
-    network_id: 'ce07016c-95df-4085-bb5a-565caffc2063'
     region: 'REG1'
+    base_image: 'Centos 7'
+    flavor: "s1-2"
+    network_name": 'Ext-Net'
+    provider_auth_url": "https://auth.example.net/v2.0/",
+    provider_token": "RjsFthr98PLnfuTNUNR3HqsxqKCv8RfN",
+    provider_username": "UserName",
+    ssh_username": "centos",
+    tenant_id": "abef5abce681497a8ee5678b2df60ef6"
 '''
 
 RETURN = '''
@@ -89,8 +111,6 @@ from ansible.plugins import AnsiblePlugin
 from ansible.plugins.lookup import LookupBase
 from ansible.plugins.lookup import config
 
-#def packer_validate():
-
 def get_item_from_json(name_key,id_key,value,json_document):
     json_object = json.loads(json_document)
     for entry in json_object:
@@ -100,7 +120,7 @@ def get_item_from_json(name_key,id_key,value,json_document):
             return entry_id
     return ""
 
-#def check_existing_image(module):
+#def get_existing_image(module):
 #    openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '--private', '-f', 'json',
 #            '--os-username', module.params['provider_username'],
 #            '--os-auth-url', module.params['provider_auth_url'],
@@ -131,8 +151,8 @@ def get_network_by_name(module):
             '--os-region-name', module.params['region']
         ], stdin=PIPE, stdout=PIPE, stderr=PIPE)
     out, err = openstack_cmd.communicate()
-    rc = openstack_cmd.close()
-    
+    rc = openstack_cmd.returncode
+
 #    if rc == 0:
     return get_item_from_json('name', 'id', module.params['network_name'], out)
 
@@ -175,9 +195,8 @@ def generate_packer_json(module,packer_manifest):
     }
     return json.dumps(data)
 
-def build_image(module):
-    
-    packer_env = {
+def set_packer_env(module):
+    return {
             'OS_REGION_NAME': module.params['region'],
             'OS_AUTH_URL': module.params['provider_auth_url'],
             'OS_USERNAME': module.params['provider_username'],
@@ -185,26 +204,17 @@ def build_image(module):
             'OS_PASSWORD': module.params['provider_token']
     }
 
-    manifest_fd, packer_manifest = make_temp_json(module,'packer_manifest')
-    packer_data = str(generate_packer_json(module,packer_manifest))
-    packer_fd, packer_file = make_temp_json(module,'packer')
-
-    with open(packer_file, 'w') as f:
-        f.write(packer_data)
-    os.close(packer_fd)
-
-    packer_cmd = Popen(['/usr/local/bin/packer', 'build', packer_file ], 
+def packer_validate(module, packer_env, packer_file, packer_manifest):
+    packer_cmd = Popen(['/usr/local/bin/packer', 'validate', packer_file ],
             stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
     out, err = packer_cmd.communicate()
+    return packer_cmd.returncode
 
-    
-    with open(packer_manifest) as manifest:
-        data = json.load(manifest)
-    os.close(manifest_fd)
-
-    os.remove(packer_file)
-    os.remove(packer_manifest)
-    return data['builds'][0]['artifact_id']
+def build_image(module, packer_env, packer_file, packer_manifest):
+    packer_cmd = Popen(['/usr/local/bin/packer', 'build', packer_file ],
+            stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
+    out, err = packer_cmd.communicate()
+    rc = packer_cmd.returncode
 
 #def delete_old_image():
 
@@ -234,9 +244,28 @@ def main():
         changed=False
     )
 
-    result['image_id'] = get_image_by_name(module)
-    result['output'] = build_image(module)
-    result['network'] = get_network_by_name(module)
+    # Initiate packer environment and files
+    manifest_fd, packer_manifest = make_temp_json(module,'packer_manifest')
+    packer_data = str(generate_packer_json(module,packer_manifest))
+    packer_fd, packer_file = make_temp_json(module,'packer')
+    packer_env = set_packer_env(module)
+
+    with open(packer_file, 'w') as f:
+        f.write(packer_data)
+    os.close(packer_fd)
+
+    if packer_validate(module, packer_env, packer_file, packer_manifest) == 0:
+        build_image(module, packer_env, packer_file, packer_manifest)
+    else:
+        exit(1)
+
+    with open(packer_manifest) as manifest:
+        data = json.load(manifest)
+    os.close(manifest_fd)
+    os.remove(packer_file)
+    os.remove(packer_manifest)
+
+    result['image_id'] = data['builds'][0]['artifact_id']
 
     module.exit_json(**result)
 
