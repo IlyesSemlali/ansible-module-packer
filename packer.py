@@ -111,112 +111,128 @@ from ansible.plugins import AnsiblePlugin
 from ansible.plugins.lookup import LookupBase
 from ansible.plugins.lookup import config
 
-def set_packer_env(module):
-    return {
-            'OS_REGION_NAME': module.params['region'],
-            'OS_AUTH_URL': module.params['provider_auth_url'],
-            'OS_USERNAME': module.params['provider_username'],
-            'OS_TENANT_ID': module.params['tenant_id'],
-            'OS_PASSWORD': module.params['provider_token']
-    }
+class PackerModule(AnsibleModule):
+    def set_packer_env(self):
+        return {
+                'OS_REGION_NAME': self.params['region'],
+                'OS_AUTH_URL': self.params['provider_auth_url'],
+                'OS_USERNAME': self.params['provider_username'],
+                'OS_TENANT_ID': self.params['tenant_id'],
+                'OS_PASSWORD': self.params['provider_token']
+        }
+    
+    def get_item_from_json(self, name_key, id_key, value, json_document):
+        items = []
+        json_object = json.loads(json_document)
+        for entry in json_object:
+            entry_name = str(entry[name_key])
+            entry_id = str(entry[id_key])
+            if entry_name.translate(None, string.whitespace) == value.translate(None, string.whitespace):
+                items.append(entry_id)
+        return items
+    
+    def get_existing_images(self):
+        openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '--private', '-f', 'json'],
+                stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
+        out, err = openstack_cmd.communicate()
+        return self.get_item_from_json('Name', 'ID', self.params['name'], out)
+    
+    def get_image_by_name(self):
+        openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '-f', 'json'],
+                stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
+        out, err = openstack_cmd.communicate()
+        return self.get_item_from_json('Name', 'ID', self.params['base_image'], out)
+    
+    def get_network_by_name(self):
+        openstack_cmd = Popen(['/usr/bin/neutron', 'net-list', '-f', 'json'],
+                stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
+        out, err = openstack_cmd.communicate()
+        rc = openstack_cmd.returncode
+    
+        return self.get_item_from_json('name', 'id', self.params['network_name'], out)
+    
+    def make_temp_json(self, name):
+        remote_tmp = os.path.expandvars(self._remote_tmp)
+        if not os.path.isdir(remote_tmp):
+            os.makedirs(remote_tmp)
+        fd, path = mkstemp(prefix='ansible-' + name + '.', suffix='.json',
+                    dir=remote_tmp
+                )
+        return fd, path
+    
+    def generate_packer_json(self, packer_env, packer_manifest):
+        image_id = self.params['base_image_id'] if self.params['base_image_id'] else self.get_image_by_name()
+        network_id = self.params['network_id'] if self.params['network_id'] else self.get_network_by_name()
+    
+        post_processors = [{
+          "type": "manifest",
+          "output": packer_manifest,
+          "strip_path": 'true'
+        }]
+    
+        provisioners = [{ }]
+    
+        builders = [{
+                "type": "openstack",
+                "region": str(self.params['region']),
+                "image_name": str(self.params['name']),
+                "source_image": str(image_id),
+                "flavor": str(self.params['flavor']),
+                "insecure": "true",
+                "ssh_ip_version": "4",
+                "networks": [ str(network_id) ],
+                "communicator": "ssh",
+                "ssh_username": str(self.params['ssh_username']) }]
+    
+        data = {
+                "builders": builders,
+                "post-processors": post_processors
+        }
+        return json.dumps(data)
+    
+    def packer_validate(module, packer_env, packer_file, packer_manifest):
+        packer_cmd = Popen(['/usr/local/bin/packer', 'validate', packer_file ],
+                stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
+        out, err = packer_cmd.communicate()
+        return packer_cmd.returncode
+    
+    def build_image(module, packer_env, packer_file, packer_manifest):
+        packer_cmd = Popen(['/usr/local/bin/packer', 'build', packer_file ],
+                stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
+        out, err = packer_cmd.communicate()
+        rc = packer_cmd.returncode
+    
+    #def delete_old_image(module,image_list):
+    #    openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'delete',
+    #            '--os-username', self.params['provider_username'],
+    #            '--os-auth-url', self.params['provider_auth_url'],
+    #            '--os-password', self.params['provider_token'],
+    #            '--os-project-id', self.params['tenant_id'],
+    #            '--os-region-name', self.params['region']
+    #        ], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    #    out, err = openstack_cmd.communicate()
+    #    rc = openstack_cmd.returncode
+    #
+    #    if rc == 0:
+    #        return true
+    #    else:
+    #        return false
+    #
 
-def get_item_from_json(name_key,id_key,value,json_document):
-    items = []
-    json_object = json.loads(json_document)
-    for entry in json_object:
-        entry_name = str(entry[name_key])
-        entry_id = str(entry[id_key])
-        if entry_name.translate(None, string.whitespace) == value.translate(None, string.whitespace):
-            items.append(entry_id)
-    return items
+    def __init__(self, argument_spec, bypass_checks=False, no_log=False,
+                 check_invalid_arguments=None, mutually_exclusive=None, required_together=None,
+                 required_one_of=None, add_file_common_args=False, supports_check_mode=False,
+                 required_if=None):
 
-def get_existing_images(module,packer_env):
-    openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '--private', '-f', 'json'],
-            stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
-    out, err = openstack_cmd.communicate()
-    return get_item_from_json('Name', 'ID', module.params['name'], out)
+        super(PackerModule,self).__init__(argument_spec, bypass_checks, no_log,
+                 check_invalid_arguments, mutually_exclusive, required_together,
+                 required_one_of, add_file_common_args, supports_check_mode,
+                 required_if)
 
-def get_image_by_name(module,packer_env):
-    openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '-f', 'json'],
-            stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
-    out, err = openstack_cmd.communicate()
-    return get_item_from_json('Name', 'ID', module.params['base_image'], out)
-
-def get_network_by_name(module):
-    openstack_cmd = Popen(['/usr/bin/neutron', 'net-list', '-f', 'json'],
-            stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
-    out, err = openstack_cmd.communicate()
-    rc = openstack_cmd.returncode
-
-    return get_item_from_json('name', 'id', module.params['network_name'], out)
-
-def make_temp_json(module,name):
-    remote_tmp = os.path.expandvars(module._remote_tmp)
-    if not os.path.isdir(remote_tmp):
-        os.makedirs(remote_tmp)
-    fd, path = mkstemp(prefix='ansible-' + name + '.', suffix='.json',
-                dir=remote_tmp
-            )
-    return fd, path
-
-def generate_packer_json(module, packer_env, packer_manifest):
-    image_id = module.params['base_image_id'] if module.params['base_image_id'] else get_image_by_name(module, packer_env)
-    network_id = module.params['network_id'] if module.params['network_id'] else get_network_by_name(module)
-
-    post_processors = [{
-      "type": "manifest",
-      "output": packer_manifest,
-      "strip_path": 'true'
-    }]
-
-    provisioners = [{ }]
-
-    builders = [{
-            "type": "openstack",
-            "region": str(module.params['region']),
-            "image_name": str(module.params['name']),
-            "source_image": str(image_id),
-            "flavor": str(module.params['flavor']),
-            "insecure": "true",
-            "ssh_ip_version": "4",
-            "networks": [ str(network_id) ],
-            "communicator": "ssh",
-            "ssh_username": str(module.params['ssh_username']) }]
-
-    data = {
-            "builders": builders,
-            "post-processors": post_processors
-    }
-    return json.dumps(data)
-
-def packer_validate(module, packer_env, packer_file, packer_manifest):
-    packer_cmd = Popen(['/usr/local/bin/packer', 'validate', packer_file ],
-            stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
-    out, err = packer_cmd.communicate()
-    return packer_cmd.returncode
-
-def build_image(module, packer_env, packer_file, packer_manifest):
-    packer_cmd = Popen(['/usr/local/bin/packer', 'build', packer_file ],
-            stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
-    out, err = packer_cmd.communicate()
-    rc = packer_cmd.returncode
-
-#def delete_old_image(module,image_list):
-#    openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'delete',
-#            '--os-username', module.params['provider_username'],
-#            '--os-auth-url', module.params['provider_auth_url'],
-#            '--os-password', module.params['provider_token'],
-#            '--os-project-id', module.params['tenant_id'],
-#            '--os-region-name', module.params['region']
-#        ], stdin=PIPE, stdout=PIPE, stderr=PIPE)
-#    out, err = openstack_cmd.communicate()
-#    rc = openstack_cmd.returncode
-#
-#    if rc == 0:
-#        return true
-#    else:
-#        return false
-#
+        self.manifest_fd, self.packer_manifest = self.make_temp_json('packer_manifest')
+        self.packer_fd, self.packer_file = self.make_temp_json('packer')
+        self.packer_env = self.set_packer_env()
+        self.packer_data = str(self.generate_packer_json(self.packer_env, self.packer_manifest))
 
 def main():
     # define available arguments/parameters a user can pass to the module
@@ -235,7 +251,7 @@ def main():
         provider_auth_url=dict(type='str', required=False)
     )
 
-    module = AnsibleModule(
+    module = PackerModule(
         argument_spec=module_args,
         supports_check_mode=False
     )
@@ -245,11 +261,6 @@ def main():
     )
 
     # Initiate packer environment and files
-    manifest_fd, packer_manifest = make_temp_json(module,'packer_manifest')
-    packer_fd, packer_file = make_temp_json(module,'packer')
-    packer_env = set_packer_env(module)
-    packer_data = str(generate_packer_json(module, packer_env, packer_manifest))
-
 #    with open(packer_file, 'w') as f:
 #        f.write(packer_data)
 #    os.close(packer_fd)
@@ -266,7 +277,7 @@ def main():
 #    os.remove(packer_manifest)
 
 #    result['image_id'] = data['builds'][0]['artifact_id']
-    result['bmah'] = get_existing_images(module, packer_env)
+    result['bmah'] = module.get_existing_images()
     module.exit_json(**result)
 
 if __name__ == '__main__':
