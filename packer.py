@@ -190,34 +190,29 @@ class PackerModule(AnsibleModule):
         }
         return json.dumps(data)
     
-    def packer_validate(module, packer_env, packer_file, packer_manifest):
-        packer_cmd = Popen(['/usr/local/bin/packer', 'validate', packer_file ],
-                stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
+    def packer_validate(self):
+        packer_cmd = Popen(['/usr/local/bin/packer', 'validate', self.packer_file ],
+                stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = packer_cmd.communicate()
         return packer_cmd.returncode
     
-    def build_image(module, packer_env, packer_file, packer_manifest):
-        packer_cmd = Popen(['/usr/local/bin/packer', 'build', packer_file ],
-                stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
+    def build_image(self):
+        packer_cmd = Popen(['/usr/local/bin/packer', 'build', self.packer_file ],
+                stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = packer_cmd.communicate()
         rc = packer_cmd.returncode
     
-    #def delete_old_image(module,image_list):
-    #    openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'delete',
-    #            '--os-username', self.params['provider_username'],
-    #            '--os-auth-url', self.params['provider_auth_url'],
-    #            '--os-password', self.params['provider_token'],
-    #            '--os-project-id', self.params['tenant_id'],
-    #            '--os-region-name', self.params['region']
-    #        ], stdin=PIPE, stdout=PIPE, stderr=PIPE)
-    #    out, err = openstack_cmd.communicate()
-    #    rc = openstack_cmd.returncode
-    #
-    #    if rc == 0:
-    #        return true
-    #    else:
-    #        return false
-    #
+    def delete_old_images(self,image_list):
+        openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'delete', image_list],
+                stdin=PIPE, stdout=PIPE, stderr=PIPE, env=packer_env)
+        out, err = openstack_cmd.communicate()
+        rc = openstack_cmd.returncode
+    
+        if rc == 0:
+            return true
+        else:
+            return false
+    
 
     def __init__(self, argument_spec, bypass_checks=False, no_log=False,
                  check_invalid_arguments=None, mutually_exclusive=None, required_together=None,
@@ -261,22 +256,22 @@ def main():
     )
 
     # Initiate packer environment and files
-#    with open(packer_file, 'w') as f:
-#        f.write(packer_data)
-#    os.close(packer_fd)
+    with open(packer_file, 'w') as f:
+        f.write(packer_data)
+    os.close(packer_fd)
 
-#    if packer_validate(module, packer_env, packer_file, packer_manifest) == 0:
-#        build_image(module, packer_env, packer_file, packer_manifest)
-#    else:
-#        exit(1)
+    if packer_validate() == 0:
+        build_image()
+    else:
+        exit(1)
 
-#    with open(packer_manifest) as manifest:
-#        data = json.load(manifest)
-#    os.close(manifest_fd)
-#    os.remove(packer_file)
-#    os.remove(packer_manifest)
+    with open(packer_manifest) as manifest:
+        data = json.load(manifest)
+    os.close(manifest_fd)
+    os.remove(packer_file)
+    os.remove(packer_manifest)
 
-#    result['image_id'] = data['builds'][0]['artifact_id']
+    result['image_id'] = data['builds'][0]['artifact_id']
     result['bmah'] = module.get_existing_images()
     module.exit_json(**result)
 
