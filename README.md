@@ -5,9 +5,7 @@
 Here are the features that are coming very soon: 
 
  * Deletion of the old images when the build is done correctly (with a retention parameter) - Still need to handle retention
- * Validation of the json produced before running the build - GOOD
  * Support for the check_mode (return image id if an image exists, fails when none were found)
- * Support for the state arg (present : build if image doesn't exist, update : build image and erase when successful, absent : deletes all images)
 
 ## Installation
 
@@ -17,6 +15,10 @@ Here are the features that are coming very soon:
 
 ## Limitations
 
+When changing name, there might be an issue with the number of built images, and if you use the default state=present parameter, the image returned may not be the lase one. 
+
 ## Contribute 
 
  * Any kind of contribution is welcome : Don't hesitate to send feedback when something is wrong or missing with this module. 
+
+

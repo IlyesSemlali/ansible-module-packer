@@ -24,6 +24,10 @@ options:
         description:
             - "The name of the image that will be built"
         required: true
+    state:
+        description:
+            - "State of the image addressed by ansible, present : build if image doesn't exist, update : build image and erase when successful, absent : deletes all images"
+        default: present
     provider_username:
         description:
             - "Username needed to authenticate against specified provider"
@@ -135,9 +139,13 @@ class PackerModule(AnsibleModule):
         openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '--private', '-f', 'json'],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = openstack_cmd.communicate()
-        return self.get_item_from_json('Name', 'ID', self.params['name'], out)
+        images = self.get_item_from_json('Name', 'ID', self.params['name'], out)
+        if images:
+            return images
+        else:
+            return []
 
-    def get_image_by_name(self):
+    def get_images_by_name(self):
         openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '-f', 'json'],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = openstack_cmd.communicate()
@@ -167,7 +175,7 @@ class PackerModule(AnsibleModule):
         return fd, path
 
     def generate_packer_json(self):
-        image_id = self.params['base_image_id'] if self.params['base_image_id'] else self.get_image_by_name()
+        image_id = self.params['base_image_id'] if self.params['base_image_id'] else self.get_images_by_name()
         network_id = self.params['network_id'] if self.params['network_id'] else self.get_network_by_name()
 
         post_processors = [{
@@ -205,15 +213,27 @@ class PackerModule(AnsibleModule):
         else:
             return False
 
+    def write_packer_data(self):
+        with open(self.packer_file, 'w') as f:
+            f.write(self.packer_data)
+        os.close(self.packer_fd)
+
     def build_image(self):
+        if not self.packer_validate():
+            return None
+
         packer_cmd = Popen(['/usr/local/bin/packer', 'build', self.packer_file],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = packer_cmd.communicate()
         rc = packer_cmd.returncode
+    
         if rc == 0:
-            return True
+            with open(self.packer_manifest, 'r') as manifest:
+                data = json.load(manifest)
+                os.close(self.manifest_fd)
+            return data['builds'][0]['artifact_id']
         else:
-            return False
+            return None
 
     def delete_old_images(self):
         popen_args = ['/usr/bin/openstack', 'image', 'delete']
@@ -228,6 +248,11 @@ class PackerModule(AnsibleModule):
         else:
             return False
 
+    def clean(self):
+        os.remove(self.packer_file)
+        os.remove(self.packer_manifest)
+        
+
     def __init__(self, argument_spec, bypass_checks=False, no_log=False,
                  check_invalid_arguments=None, mutually_exclusive=None, required_together=None,
                  required_one_of=None, add_file_common_args=False, supports_check_mode=False,
@@ -240,14 +265,19 @@ class PackerModule(AnsibleModule):
 
         self.packer_env = self.set_packer_env()
         self.existing_images = self.get_existing_images()
+        self.image_id = ''
         self.manifest_fd, self.packer_manifest = self.make_temp_json('packer_manifest')
         self.packer_fd, self.packer_file = self.make_temp_json('packer')
         self.packer_data = str(self.generate_packer_json())
+
+        if self.existing_images:
+            self.image_id = self.get_existing_images()[0]
 
 def main():
     # define available arguments/parameters a user can pass to the module
     module_args = dict(
         name=dict(type='str', required=True),
+        state=dict(type='str', default='present'),
         base_image=dict(type='str', required=False),
         base_image_id=dict(type='str', required=False),
         flavor=dict(type='str', required=True),
@@ -270,30 +300,32 @@ def main():
         changed=False
     )
 
-    # TODO: Put module's logic inside PackerModule's class
-    # Initiate packer environment and files
-    with open(module.packer_file, 'w') as f:
-        f.write(module.packer_data)
-    os.close(module.packer_fd)
+    module.write_packer_data()
 
+    if module.params['state'] == 'present' and not module.image_id:
+        module.image_id = module.build_image()
+        result['changed'] = True
+        
+    elif module.params['state'] == 'updated':
+        module.image_id = module.build_image()
+        if module.image_id != '':
+            module.delete_old_images()
+            result['changed'] = True
+        #TODO:else raise error
 
-    build_successful = False
-    if module.packer_validate():
-        build_successful = module.build_image()
+    elif module.params['state'] == 'absent':
+        module.delete_old_images()
+        module.image_id = ''
+        result['changed'] = True
     else:
-        exit(1)
+        module.image_id = ''
+        #TODO:raise error
 
-    if build_successful:
-        result['delete'] = module.delete_old_images()
-    with open(module.packer_manifest, 'r') as manifest:
-        data = json.load(manifest)
-    os.close(module.manifest_fd)
-    os.remove(module.packer_file)
-    os.remove(module.packer_manifest)
+    result['image_id'] = module.image_id
 
-    result['image_id'] = data['builds'][0]['artifact_id']
-
+    module.clean()
     module.exit_json(**result)
 
 if __name__ == '__main__':
     main()
+
