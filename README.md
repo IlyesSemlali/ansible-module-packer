@@ -6,8 +6,18 @@ Here are the features that are coming very soon:
 
  * Deletion of the old images when the build is done correctly (with a retention parameter) - Still need to handle retention
  * Support for the check_mode (return image id if an image exists, fails when none were found)
+ * Verbosity options
 
 ## Installation
+
+### Manual installation 
+
+In order to get this module working the packer.py file should be placed under one of these locations : 
+
+ * /home/${USER}/.ansible/plugins/modules/action_plugins
+ * TODO
+ * TODO 
+ * ...
 
 ## Use it in a playbook
 

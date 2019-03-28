@@ -86,6 +86,7 @@ EXAMPLES = '''
 - name: Build CentOS 7
   packer:
     name: MyCentos7
+    state: present
     region: 'REG1'
     base_image: 'Centos 7'
     flavor: "s1-2"
@@ -136,6 +137,7 @@ class PackerModule(AnsibleModule):
         return items
 
     def get_existing_images(self):
+        #return []
         return ["image1",
                 "image2"]
         openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '--private', '-f', 'json'],
@@ -155,19 +157,17 @@ class PackerModule(AnsibleModule):
             return []
 
     def get_images_by_name(self):
-        return ["base1",
-                "base2"]
         openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '-f', 'json'],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = openstack_cmd.communicate()
-        #TODO: if rc != 0 fail
-        rc = openstack_cmd.returncode
 
-        #TODO: if list empty, fail
-        return self.get_item_from_json('Name', 'ID', self.params['base_image'], out)[0]
+        try:
+            assert openstack_cmd.returncode == 0
+            return self.get_item_from_json('Name', 'ID', self.params['base_image'], out)[0]
+        except:
+            self.fail_json(msg="Error while getting image ID with Openstack client")
 
     def get_network_by_name(self):
-        #return "network" # Check mode
         openstack_cmd = Popen(['/usr/bin/neutron', 'net-list', '-f', 'json'],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = openstack_cmd.communicate()
@@ -218,7 +218,6 @@ class PackerModule(AnsibleModule):
         return json.dumps(data)
 
     def packer_validate(self):
-        #return True# Check mode
         packer_cmd = Popen(['/usr/local/bin/packer', 'validate', self.packer_file],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = packer_cmd.communicate()
@@ -233,11 +232,13 @@ class PackerModule(AnsibleModule):
         os.close(self.packer_fd)
 
     def clean(self):
-        os.remove(self.packer_file)
-        os.remove(self.packer_manifest)
+        try:
+            os.remove(self.packer_file)
+            os.remove(self.packer_manifest)
+        except:
+            pass
 
     def build_image(self):
-        #return 'built_image1' # Check mode
         try:
             assert self.packer_validate()
         except:
@@ -259,7 +260,9 @@ class PackerModule(AnsibleModule):
             self.fail_json(msg="Error while building image")
 
     def delete_old_images(self):
-        #return True # Check mode
+        if self.params['state'] == "absent":
+            self.image_id = ''
+
         popen_args = ['/usr/bin/openstack', 'image', 'delete']
         for image in self.existing_images:
             popen_args.append(image)
@@ -267,17 +270,19 @@ class PackerModule(AnsibleModule):
         openstack_cmd = Popen(popen_args, stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = openstack_cmd.communicate()
 
+
         try:
             assert openstack_cmd.returncode == 0
             return True
         except:
+
             self.clean()
             self.fail_json(msg="Error while deleting images")
 
 
     def __init__(self, argument_spec, bypass_checks=False, no_log=False,
                  check_invalid_arguments=None, mutually_exclusive=None, required_together=None,
-                 required_one_of=None, add_file_common_args=False, supports_check_mode=False,
+                 required_one_of=None, add_file_common_args=False, supports_check_mode=True,
                  required_if=None):
 
         super(PackerModule,self).__init__(argument_spec, bypass_checks, no_log,
@@ -299,7 +304,7 @@ def main():
     # define available arguments/parameters a user can pass to the module
     module_args = dict(
         name=dict(type='str', required=True),
-        state=dict(type='str', default='updated'),
+        state=dict(type='str', default='present'),
         base_image=dict(type='str', required=False),
         base_image_id=dict(type='str', required=False),
         flavor=dict(type='str', required=True),
@@ -329,20 +334,17 @@ def main():
         result['changed'] = True
 
     elif module.params['state'] == 'updated':
-        module.image_id = module.build_image()
+        image_id = module.build_image()
+
         if module.image_id != '':
             module.delete_old_images()
-            result['changed'] = True
+
+        result['changed'] = True
+        module.image_id = image_id
 
     elif module.params['state'] == 'absent':
-        try:
-            module.delete_old_images()
-            module.image_id = ''
-            result['changed'] = True
-        except:
-            module.image_id = ''
-            #module.clean()
-            module.fail_json(msg="Error while deleting images")
+        module.delete_old_images()
+        result['changed'] = True
 
     result['image_id'] = module.image_id
 
