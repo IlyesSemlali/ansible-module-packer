@@ -136,16 +136,27 @@ class PackerModule(AnsibleModule):
         return items
 
     def get_existing_images(self):
+        return ["image1",
+                "image2"]
         openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '--private', '-f', 'json'],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = openstack_cmd.communicate()
-        images = self.get_item_from_json('Name', 'ID', self.params['name'], out)
+        try:
+            images = self.get_item_from_json('Name', 'ID', self.params['name'], out)
+        except:
+            try:
+                self.clean()
+            except:
+                pass
+            self.fail_json(msg="Unable to get images from openstack client")
         if images:
             return images
         else:
             return []
 
     def get_images_by_name(self):
+        return ["base1",
+                "base2"]
         openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '-f', 'json'],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = openstack_cmd.communicate()
@@ -156,14 +167,16 @@ class PackerModule(AnsibleModule):
         return self.get_item_from_json('Name', 'ID', self.params['base_image'], out)[0]
 
     def get_network_by_name(self):
+        #return "network" # Check mode
         openstack_cmd = Popen(['/usr/bin/neutron', 'net-list', '-f', 'json'],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = openstack_cmd.communicate()
-        #TODO: if rc != 0 fail
-        rc = openstack_cmd.returncode
 
-        #TODO: if list empty, fail
-        return self.get_item_from_json('name', 'id', self.params['network_name'], out)[0]
+        try:
+            assert openstack_cmd.returncode == 0
+            return self.get_item_from_json('name', 'id', self.params['network_name'], out)[0]
+        except:
+            self.fail_json(msg="Error while getting network ID with Openstack client")
 
     def make_temp_json(self, name):
         remote_tmp = os.path.expandvars(self._remote_tmp)
@@ -205,37 +218,48 @@ class PackerModule(AnsibleModule):
         return json.dumps(data)
 
     def packer_validate(self):
+        #return True# Check mode
         packer_cmd = Popen(['/usr/local/bin/packer', 'validate', self.packer_file],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = packer_cmd.communicate()
         if packer_cmd.returncode == 0:
             return True
         else:
-            return False
+            return None
 
     def write_packer_data(self):
         with open(self.packer_file, 'w') as f:
             f.write(self.packer_data)
         os.close(self.packer_fd)
 
+    def clean(self):
+        os.remove(self.packer_file)
+        os.remove(self.packer_manifest)
+
     def build_image(self):
-        if not self.packer_validate():
-            return None
+        #return 'built_image1' # Check mode
+        try:
+            assert self.packer_validate()
+        except:
+            self.fail_json(msg="Packer file validation failed")
+
 
         packer_cmd = Popen(['/usr/local/bin/packer', 'build', self.packer_file],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = packer_cmd.communicate()
-        rc = packer_cmd.returncode
-    
-        if rc == 0:
+
+        try:
+            assert packer_cmd.returncode == 0
             with open(self.packer_manifest, 'r') as manifest:
                 data = json.load(manifest)
                 os.close(self.manifest_fd)
             return data['builds'][0]['artifact_id']
-        else:
-            return None
+        except:
+            self.clean()
+            self.fail_json(msg="Error while building image")
 
     def delete_old_images(self):
+        #return True # Check mode
         popen_args = ['/usr/bin/openstack', 'image', 'delete']
         for image in self.existing_images:
             popen_args.append(image)
@@ -243,15 +267,13 @@ class PackerModule(AnsibleModule):
         openstack_cmd = Popen(popen_args, stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = openstack_cmd.communicate()
 
-        if openstack_cmd.returncode == 0:
+        try:
+            assert openstack_cmd.returncode == 0
             return True
-        else:
-            return False
+        except:
+            self.clean()
+            self.fail_json(msg="Error while deleting images")
 
-    def clean(self):
-        os.remove(self.packer_file)
-        os.remove(self.packer_manifest)
-        
 
     def __init__(self, argument_spec, bypass_checks=False, no_log=False,
                  check_invalid_arguments=None, mutually_exclusive=None, required_together=None,
@@ -277,7 +299,7 @@ def main():
     # define available arguments/parameters a user can pass to the module
     module_args = dict(
         name=dict(type='str', required=True),
-        state=dict(type='str', default='present'),
+        state=dict(type='str', default='updated'),
         base_image=dict(type='str', required=False),
         base_image_id=dict(type='str', required=False),
         flavor=dict(type='str', required=True),
@@ -305,21 +327,22 @@ def main():
     if module.params['state'] == 'present' and not module.image_id:
         module.image_id = module.build_image()
         result['changed'] = True
-        
+
     elif module.params['state'] == 'updated':
         module.image_id = module.build_image()
         if module.image_id != '':
             module.delete_old_images()
             result['changed'] = True
-        #TODO:else raise error
 
     elif module.params['state'] == 'absent':
-        module.delete_old_images()
-        module.image_id = ''
-        result['changed'] = True
-    else:
-        module.image_id = ''
-        #TODO:raise error
+        try:
+            module.delete_old_images()
+            module.image_id = ''
+            result['changed'] = True
+        except:
+            module.image_id = ''
+            #module.clean()
+            module.fail_json(msg="Error while deleting images")
 
     result['image_id'] = module.image_id
 
