@@ -137,9 +137,6 @@ class PackerModule(AnsibleModule):
         return items
 
     def get_existing_images(self):
-        #return []
-        return ["image1",
-                "image2"]
         openstack_cmd = Popen(['/usr/bin/openstack', 'image', 'list', '--private', '-f', 'json'],
                 stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = openstack_cmd.communicate()
