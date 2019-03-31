@@ -72,10 +72,6 @@ options:
         description:
             - "User needed to provision the image that will be built"
         required: true
-    update:
-        description:
-            - Wether to update an existing image or not
-        required: false
 
 author:
     - Ilyes Semlali (@IlyesSemlali)
@@ -236,6 +232,12 @@ class PackerModule(AnsibleModule):
             pass
 
     def build_image(self):
+        # Support for check_mode
+        if self.check_mode:
+            self.diff['after'] == self.image_id
+            return "01234567-89ab-cdef-1234-56789abcdef0"
+
+        # Actual build
         try:
             assert self.packer_validate()
         except:
@@ -251,18 +253,25 @@ class PackerModule(AnsibleModule):
             with open(self.packer_manifest, 'r') as manifest:
                 data = json.load(manifest)
                 os.close(self.manifest_fd)
+            self.diff['after'] = data['builds'][0]['artifact_id']
             return data['builds'][0]['artifact_id']
         except:
             self.clean()
             self.fail_json(msg="Error while building image")
 
     def delete_old_images(self):
+        if self.check_mode:
+            return self.existing_images
+
         if self.params['state'] == "absent":
             self.image_id = ''
+
+        deleted_images = []
 
         popen_args = ['/usr/bin/openstack', 'image', 'delete']
         for image in self.existing_images:
             popen_args.append(image)
+            deleted_images.append(image)
 
         openstack_cmd = Popen(popen_args, stdin=PIPE, stdout=PIPE, stderr=PIPE, env=self.packer_env)
         out, err = openstack_cmd.communicate()
@@ -270,12 +279,19 @@ class PackerModule(AnsibleModule):
 
         try:
             assert openstack_cmd.returncode == 0
-            return True
+            for image in self.existing_images:
+                self.diff['after'].remove(image)
+            return deleted_images
         except:
-
             self.clean()
             self.fail_json(msg="Error while deleting images")
 
+    def check_changes(self):
+        # Code is inunderstandable and does not work, gotta get this out
+        if set(self.diff['before']) != set(self.diff['after']):
+            return True
+        else:
+            return False
 
     def __init__(self, argument_spec, bypass_checks=False, no_log=False,
                  check_invalid_arguments=None, mutually_exclusive=None, required_together=None,
@@ -293,6 +309,11 @@ class PackerModule(AnsibleModule):
         self.manifest_fd, self.packer_manifest = self.make_temp_json('packer_manifest')
         self.packer_fd, self.packer_file = self.make_temp_json('packer')
         self.packer_data = str(self.generate_packer_json())
+
+        # init both before and after, and create diff at each operation (build/delete)
+        self.diff = {}
+        self.diff['before'] = self.get_existing_images()
+        self.diff['after'] = self.get_existing_images()
 
         if self.existing_images:
             self.image_id = self.get_existing_images()[0]
@@ -317,7 +338,7 @@ def main():
 
     module = PackerModule(
         argument_spec=module_args,
-        supports_check_mode=False
+        supports_check_mode=True
     )
 
     result = dict(
@@ -328,22 +349,34 @@ def main():
 
     if module.params['state'] == 'present' and not module.image_id:
         module.image_id = module.build_image()
-        result['changed'] = True
+        try:
+            module.diff['after'].append(module.image_id)
+        except:
+            pass
 
     elif module.params['state'] == 'updated':
         image_id = module.build_image()
 
         if module.image_id != '':
-            module.delete_old_images()
+            deleted_images = module.delete_old_images()
+            for image in deleted_images:
+                module.diff['after'].remove(image)
 
-        result['changed'] = True
         module.image_id = image_id
+        module.diff['after'].append(image_id)
 
     elif module.params['state'] == 'absent':
-        module.delete_old_images()
-        result['changed'] = True
+        if module.image_id != '':
+            deleted_images = module.delete_old_images()
+            for image in deleted_images:
+                module.diff['after'].remove(image)
 
     result['image_id'] = module.image_id
+
+    if module._diff:
+        result['diff'] = module.diff
+
+    result['changed'] = module.check_changes()
 
     module.clean()
     module.exit_json(**result)
