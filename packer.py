@@ -56,6 +56,10 @@ options:
         description:
             - "Flavor used to build new image"
         required: true
+    provisionners:
+        description:
+            - Provisionner and it's script to build the image
+        requied: false
     region:
         description:
             - "Region name where the image will be built"
@@ -92,6 +96,9 @@ EXAMPLES = '''
     provider_username": "UserName",
     ssh_username": "centos",
     tenant_id": "abef5abce681497a8ee5678b2df60ef6"
+    provisionners:
+      - type: "shell"
+        script: "yum install -y nmap-ncat"
 '''
 
 RETURN = '''
@@ -190,7 +197,10 @@ class PackerModule(AnsibleModule):
           "strip_path": 'true'
         }]
 
-        provisioners = [{ }]
+        if self.params['provisionners']:
+            provisioners = self.params['provisionners']
+        else:
+            provisionners = [{}]
 
         builders = [{
                 "type": "openstack",
@@ -329,6 +339,7 @@ def main():
         network_id=dict(type='str', required=False),
         network_name=dict(type='str', required=False),
         ssh_username=dict(type='str', required=True),
+        provisionners=dict(type='list', required=False),
         region=dict(type='str', required=True),
         tenant_id=dict(type='str', required=True),
         provider_username=dict(type='str', required=True),

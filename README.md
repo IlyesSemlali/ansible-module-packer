@@ -1,35 +1,58 @@
 # Packer module for Ansible
 
-## Work In Progress
+## Requirements
 
-Here are the features that are coming very soon: 
+This module works with the `openstack` client and the `neutron` clients. 
 
- * Deletion of the old images when the build is done correctly (with a retention parameter) - Still need to handle retention
- * Support for the check_mode (return image id if an image exists, fails when none were found)
- * Verbosity options
- * Diff
+```shell
+pip install python-openstackclient neutron
+```
 
 ## Installation
-
-### Manual installation 
 
 In order to get this module working the packer.py file should be placed under one of these locations : 
 
  * /home/${USER}/.ansible/plugins/modules/action_plugins
- * TODO
- * TODO 
- * ...
+ * /usr/share/ansible/plugins/modules/action_plugins
+ * $ANSIBLE_LIBRARY/action_plugins
+
+(As precised in the [official documentation](docs.ansible.com/ansible/latest/dev_guide/developing_locally.html) )
 
 ## Use it in a playbook
 
+```yaml
+- name: Build CentOS 7
+  packer:
+    name: MyCentos7
+    state: present
+    region: 'REG1'
+    base_image: 'Centos 7'
+    flavor: "s1-2"
+    network_name": 'Ext-Net'
+    provider_auth_url": "https://auth.example.net/v2.0/",
+    provider_token": "RjsFthr98PLnfuTNUNR3HqsxqKCv8RfN",
+    provider_username": "UserName",
+    ssh_username": "centos",
+    tenant_id": "abef5abce681497a8ee5678b2df60ef6"
+    provisionners:
+      - type: "shell"
+        script: "yum install -y nmap-ncat"
+```
+
 ## Supported features
 
-## Limitations
+ * provisionners
+ * check_mode
+ * diff_mode
+ * Cloud provider : OpenStack (the only supported cloud provider for now)
 
-When changing name, there might be an issue with the number of built images, and if you use the default state=present parameter, the image returned may not be the lase one. 
+## Work In Progress
+
+Here are the features that are coming very soon: 
+
+ * Verbosity options
 
 ## Contribute 
 
  * Any kind of contribution is welcome : Don't hesitate to send feedback when something is wrong or missing with this module. 
-
 
