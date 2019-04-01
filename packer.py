@@ -82,7 +82,6 @@ author:
 '''
 
 EXAMPLES = '''
-# Pass in a message
 - name: Build CentOS 7
   packer:
     name: MyCentos7
@@ -197,11 +196,6 @@ class PackerModule(AnsibleModule):
           "strip_path": 'true'
         }]
 
-        if self.params['provisionners']:
-            provisioners = self.params['provisionners']
-        else:
-            provisionners = [{}]
-
         builders = [{
                 "type": "openstack",
                 "region": str(self.params['region']),
@@ -214,10 +208,19 @@ class PackerModule(AnsibleModule):
                 "communicator": "ssh",
                 "ssh_username": str(self.params['ssh_username']) }]
 
-        data = {
-                "builders": builders,
-                "post-processors": post_processors
-        }
+        if self.params['provisionners']:
+            data = {
+                    "builders": builders,
+                    "post-processors": post_processors,
+                    "provisioners": self.params['provisionners']
+            }
+
+        else:
+            data = {
+                    "builders": builders,
+                    "post-processors": post_processors
+            }
+
         return json.dumps(data)
 
     def packer_validate(self):
