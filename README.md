@@ -39,6 +39,8 @@ In order to get this module working the packer.py file should be placed under on
         script: "yum install -y nmap-ncat"
 ```
 
+For advanced users, you can use the `no_clean` parameter (set to true), in order to see how the packer file looks like in the ansible_tmp folder. 
+
 ## Supported features
 
  * provisionners

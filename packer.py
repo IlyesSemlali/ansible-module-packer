@@ -76,6 +76,10 @@ options:
         description:
             - "User needed to provision the image that will be built"
         required: true
+    no_clean:
+        description:
+            - Don't remove ansible temp files when using the packer module
+        default: false
 
 author:
     - Ilyes Semlali (@IlyesSemlali)
@@ -238,16 +242,20 @@ class PackerModule(AnsibleModule):
         os.close(self.packer_fd)
 
     def clean(self):
-        try:
-            os.remove(self.packer_file)
-            os.remove(self.packer_manifest)
-        except:
-            pass
+        if not self.params['no_clean']:
+            try:
+                os.remove(self.packer_file)
+                os.remove(self.packer_manifest)
+            except:
+                pass
 
     def build_image(self):
         # Support for check_mode
         if self.check_mode:
-            self.diff['after'] == self.image_id
+            try:
+                self.diff['after'].append(self.image_id)
+            except:
+                pass
             return "01234567-89ab-cdef-1234-56789abcdef0"
 
         # Actual build
@@ -266,7 +274,6 @@ class PackerModule(AnsibleModule):
             with open(self.packer_manifest, 'r') as manifest:
                 data = json.load(manifest)
                 os.close(self.manifest_fd)
-            self.diff['after'] = data['builds'][0]['artifact_id']
             return data['builds'][0]['artifact_id']
         except:
             self.clean()
@@ -292,15 +299,13 @@ class PackerModule(AnsibleModule):
 
         try:
             assert openstack_cmd.returncode == 0
-            for image in self.existing_images:
-                self.diff['after'].remove(image)
-            return deleted_images
         except:
             self.clean()
             self.fail_json(msg="Error while deleting images")
 
+        return deleted_images
+
     def check_changes(self):
-        # Code is inunderstandable and does not work, gotta get this out
         if set(self.diff['before']) != set(self.diff['after']):
             return True
         else:
@@ -347,7 +352,8 @@ def main():
         tenant_id=dict(type='str', required=True),
         provider_username=dict(type='str', required=True),
         provider_token=dict(type='str', required=True),
-        provider_auth_url=dict(type='str', required=False)
+        provider_auth_url=dict(type='str', required=False),
+        no_clean=dict(type='bool', default=False)
     )
 
     module = PackerModule(
@@ -374,16 +380,25 @@ def main():
         if module.image_id != '':
             deleted_images = module.delete_old_images()
             for image in deleted_images:
-                module.diff['after'].remove(image)
+                try:
+                    module.diff['after'].remove(image)
+                except:
+                    pass
 
         module.image_id = image_id
-        module.diff['after'].append(image_id)
+        try:
+            module.diff['after'].append(image_id)
+        except:
+            pass
 
     elif module.params['state'] == 'absent':
         if module.image_id != '':
             deleted_images = module.delete_old_images()
             for image in deleted_images:
-                module.diff['after'].remove(image)
+                try:
+                    module.diff['after'].remove(image)
+                except:
+                    pass
 
     result['image_id'] = module.image_id
 
@@ -393,6 +408,7 @@ def main():
     result['changed'] = module.check_changes()
 
     module.clean()
+
     module.exit_json(**result)
 
 if __name__ == '__main__':
